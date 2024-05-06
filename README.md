@@ -33,3 +33,8 @@
 ![image](https://github.com/michelsander/Fleetcor/assets/104599995/46a1b2a6-228a-4007-a768-c0a43cf7fb58)
 
 ![image](https://github.com/michelsander/Fleetcor/assets/104599995/c22a5f2a-b739-4ffb-9328-dcb7bfef21c5)
+
+
+# 📺Considerações finais
+   > 🎉Agradecimentos á Jean Carlo e a TOTVS IP S/A por acreditar no meu trabalho<br>
+   > Para maiores esclarecimentos sobre o projeto enviar mensagem de 📨e-mail para michel@sanderconsulting.com.br
