@@ -1,0 +1,61 @@
+#include 'protheus.ch'
+#include 'topconn.ch'
+
+//-------------------------------------------------------------------
+/*/{Protheus.doc} intFleetcor
+Rotina de integração com a Fleetcor
+
+@type       Function
+@author     Julio Lisboa
+@since      29/06/2022
+/*/
+//-------------------------------------------------------------------
+User Function intFleetcor(cOrigem,lLote)
+
+    DEFAULT lLote := .F.
+
+    Proc2BarGauge({|| fProcess(cOrigem, @lLote) }) //"Ações de Estorno"
+
+Return
+
+//-------------------------------------------------------------------
+static function fProcess(cOrigem,lLote)
+
+	local oIntegra      := IntegFleetcor():New()
+    local aSequenc      := {}
+    local nSequenc      := 0
+
+    aAdd( aSequenc, {"oIntegra:integVeiculo()",     "Integrando veiculo..."} )
+    aAdd( aSequenc, {"oIntegra:integMotoristas()",  "Integrando motoristas..."} )
+    aAdd( aSequenc, {"oIntegra:integTransport()",   "Integrando transportadora..."} )
+    aAdd( aSequenc, {"oIntegra:integRotas()",   	 "Integrando rotas..."} )
+    aAdd( aSequenc, {"oIntegra:integViagem()",      "Integrando viagem..."} )
+
+	If cOrigem == "*"
+        ProcRegua( len(aSequenc) )
+        for nSequenc := 1 to len(aSequenc)
+            IncProc( aSequenc[nSequenc,2] )
+            &( aSequenc[nSequenc,01] )
+            If !Empty(oIntegra:getError())
+                exit
+            endif
+            oIntegra:setError('')
+        next
+
+	elseIf cOrigem == "SA4"
+		oIntegra:integTransport()
+	elseif cOrigem == "CC2"
+		oIntegra:integLocalidades(lLote)
+	elseif cOrigem == "GU8"
+		oIntegra:integVeiculo()
+	elseif cOrigem == "DA4"
+		oIntegra:integMotoristas()
+	elseif cOrigem == "SZJ" 
+        oIntegra:integRotas(lLote)
+	elseif cOrigem == "SZV" 
+		oIntegra:integViagem()
+	else
+		oIntegra:showAviso('ERRO',"Nenhuma origem definida para integração [" + cOrigem + "]")
+	endif
+
+return

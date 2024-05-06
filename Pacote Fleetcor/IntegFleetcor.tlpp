@@ -1,0 +1,1867 @@
+#include 'totvs.ch'
+#include "topconn.ch"
+
+#define POS_ID_TPCOMPLEX		01
+#define POS_NOME_TPCOMPLEX		02
+
+#define INTEG_SUCESSO			"S"
+#define INTEG_ERRO				"N"
+
+#define STATUS_NAOINT			"N"
+#define STATUS_ERRO				"E"
+#define STATUS_SUCESSO			"I"
+
+#define QUEB_2_LINHAS			CRLF + CRLF
+
+#define TABELA_TRANSPORT		"SA4"
+#define TABELA_VEICULO			"GU8"
+#define TABELA_MOTORISTA		"DA4"
+#define TABELA_ROTAS				"SZJ"
+#define TABELA_VIAGEM			"SZV"
+
+User function IntegFleetcor();return
+
+//-------------------------------------------------------------------
+/*/{Protheus.doc} IntegFleetcor
+Classe de apoio as integrações com a Fleetcor
+
+@type           Class
+@author         Julio Lisboa
+@since          24/06/2022
+/*/
+//-------------------------------------------------------------------
+	Class IntegFleetcor
+
+		private data cToken as character
+		private data cIDCliente as character
+		private data cLogin as character
+		private data cSenha as character
+		private data cWSDL as character
+		private data oWS as object
+		private data cError as character
+		private data lErro as logical
+		private data lJob as logical
+		private data aSimpleField as array
+		private data aComplexField as array
+		private data oXMLRetorno as object
+		private data cXMLRetorno as character
+		private data cXMLEnvio as character
+		private data aCustomComplex as array
+		public data cPrefPad as character
+
+		private method configuraWS()
+		private method adjustString()
+		private method configCabecalho()
+		private method consultLocalid()
+		private method trySetValueWS()
+		private method trySetHeader()
+		private method initWSDL()
+		private method gravaLocalidade()
+		private method GravaRota()
+		private method RetornaPedagio()
+		private method addCustomComplex()
+		private method toDateWS()
+		public method showAviso()
+		public method gravaViagem()
+
+		public method new() constructor
+		public method autenticaUsuario()
+		public method showMsgLog()
+		public method isXMLSuccess()
+		public method getValueXML()
+		public method gravaStatus()
+		public method posicTabViagem()
+
+		//Metodos especificos das integrações
+		public method integLocalidades()
+		public method integTransport()
+		public method integVeiculo()
+		public method integMotoristas()
+		public method integRotas()
+		public method integTarifas()
+		public method integViagem()
+
+		// Getters
+		public method getURLWSDL()
+		public method getError()
+		public method getToken()
+		public method getSimpleField()
+		public method getComplexField()
+		private method setTokenByXML()
+		public method getXMLRetorno()
+		public method getRetorno()
+		public method getEnvio()
+
+		// Setters
+		public method setError()
+		private method setToken()
+		private method setOperationWS()
+		private method setIdentific()
+		private method setXMLRetorno()
+		private method setRetorno()
+		private method setEnvio()
+		public method setIsInJob()
+
+	EndClass
+
+//-------------------------------------------------------------------
+method new() class IntegFleetcor
+
+	self:cToken         := ""
+	self:cIDCliente     := getnewpar("ZZ_INTFL01","474340") //getnewpar("ZZ_INTFL01","245503")
+	self:cLogin         := getnewpar("ZZ_INTFL02","int474340") //getnewpar("ZZ_INTFL02","marco.paiva@imerys.com")
+	self:cSenha         := getnewpar("ZZ_INTFL03","dfde1fd8") //getnewpar("ZZ_INTFL03","711353MP@1va")
+	self:cWSDL       	  := getnewpar("ZZ_INTFL05","https://homologws.sempararempresas.com.br/Valepedagio.asmx?WSDL")
+	self:oWS            := nil
+	self:cError         := ""
+	self:lErro          := .F.
+	self:lJob           := !(Type("oMainWnd") == "O")
+	self:aSimpleField   := {}
+	self:aComplexField  := {}
+	self:aCustomComplex	:= {}
+	self:oXMLRetorno    := nil
+	self:cXMLRetorno    := ''
+	self:cXMLEnvio    	:= ''
+	self:cPrefPad		:= ':_SOAP_ENVELOPE:_SOAP_BODY'
+
+	aAdd( ::aCustomComplex, { 'IdentificacaoIntegracao' , 1 } )
+
+return self
+
+//-------------------------------------------------------------------
+method autenticaUsuario() class IntegFleetcor
+
+	local lRet          := .F.
+	local cMsg          := ""
+
+	BEGIN SEQUENCE
+
+		if !self:initWSDL()
+			lRet        := .F.
+			break
+		endif
+
+		if !self:setOperationWS('AutenticarCliente')
+			lRet        := .F.
+			break
+		endif
+
+		if !::configCabecalho()
+			lRet        := .F.
+			break
+		endif
+
+		cMsg                        := self:adjustString( self:oWs:GetSoapMsg() )
+		self:setEnvio(cMsg)
+		lRet                        := self:oWs:SendSoapMsg(EncodeUtf8(cMsg))
+		if lRet
+			cRetorno        := self:adJustString( self:oWs:GetSoapResponse() )
+			lRet            := ::isXMLSuccess(cRetorno,':_AutenticarClienteResponse:_RetornoMensagem',':_StatusRetorno')
+			If lRet .and. !::setTokenByXML(cRetorno)
+				lRet        := .F.
+				break
+			endif
+		else
+			::setError( "Erro na autenticação do usuário" )
+			break
+		endif
+
+	end sequence
+
+return lRet
+
+//-------------------------------------------------------------------
+method configCabecalho() class IntegFleetcor
+
+	local lRet          := .F.
+
+	BEGIN SEQUENCE
+
+		if !::trySetValueWS('IdClienteRodocred',self:cIDCliente)
+			break
+		endif
+
+		if !::trySetValueWS('LoginIntegracao',self:cLogin)
+			break
+		endif
+
+		if !::trySetValueWS('ChaveAutenticacao',self:cSenha)
+			break
+		else
+			lRet        := .T.
+		endif
+
+	END SEQUENCE
+
+return lRet
+
+//-------------------------------------------------------------------
+method consultLocalid(lLoteConsult) class IntegFleetcor
+
+	local lRet          := .T.
+	local cMsg          := ''
+	local cRetorno      := ''
+	local cMsgErro		  := ''
+	local cXML          := ''
+	local cInconsis     := ''
+	local aAreaCC2      := { CC2->(GetArea()) }
+
+	DEFAULT lLoteConsult := .F.
+
+	if ::autenticaUsuario()
+
+		If ::initWSDL()
+
+			BEGIN SEQUENCE 
+
+				if !self:setOperationWS('ConsultarLocalidades')
+					lRet        := .F.
+					break
+				endif
+
+				If Empty(::GetToken())
+					lRet := .F. 
+					Break 
+				EndIf 
+
+				cXML	+= '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="https://ws.rodocred.com.br/">' + CRLF
+				cXML	+= '   <soapenv:Header/>' + CRLF
+				cXML	+= '   <soapenv:Body>' + CRLF
+				cXML	+= '      <ws:ConsultarLocalidadesRequest>' + CRLF
+				cXML	+= '			<ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '				<ws:IdClienteRodocred>'+self:cIDCliente+'</ws:IdClienteRodocred>' + CRLF
+				cXML	+= '				<ws:TokenAutenticacao>' + ::GetToken() +'</ws:TokenAutenticacao>' + CRLF
+				cXML	+= '				<ws:NumeroTransacao>'+self:cSenha+'</ws:NumeroTransacao>' + CRLF
+				cXML	+= '				<ws:VersaoServico>1.00</ws:VersaoServico>' + CRLF
+				cXML	+= '			</ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '			<ws:TipoLocalidade>' + CRLF
+				cXML	+= '				<ws:Cidades>true</ws:Cidades>' + CRLF
+				cXML	+= '				<ws:Vila>false</ws:Vila>' + CRLF
+				cXML	+= '				<ws:PontoReferencia>false</ws:PontoReferencia>' + CRLF
+				cXML	+= '			</ws:TipoLocalidade>' + CRLF
+				cXML	+= '			<ws:Localidade>'+AllTrim(CC2->CC2_MUN)+'</ws:Localidade>' + CRLF
+				cXML	+= '			<ws:UF>'+AllTrim(CC2->CC2_EST)+'</ws:UF>' + CRLF
+				cXML	+= '		</ws:ConsultarLocalidadesRequest>' + CRLF
+				cXML	+= '   </soapenv:Body>' + CRLF
+				cXML	+= '</soapenv:Envelope>' + CRLF
+
+				cMsg                 := self:adjustString( self:oWs:GetSoapMsg() )
+				cMsg						:= StrTran(cMsg, 'xmlns="https://ws.rodocred.com.br/"', "")
+				cMsg						:= StrTran(cMsg,'SOAP-ENV','soapenv')
+				
+				//Envia registro pra Fleetcor
+				self:setEnvio(cXML)
+				lRet                        := self:oWs:SendSoapMsg(EncodeUtf8(cXML))
+
+				if lRet
+					cRetorno        := self:adJustString( self:oWs:GetSoapResponse() )
+					lRet            := ::isXMLSuccess(cRetorno,':_ConsultarLocalidadesResponse:_RetornoMensagem',':_StatusRetorno')
+					if lRet
+						lRet        := ::gravaLocalidade(":_SOAP_ENVELOPE:_SOAP_BODY:_ConsultarLocalidadesResponse:_ListaLocalidades")
+					else
+						cMsgErro		:= "Estado/Município: [" + AllTrim(CC2->CC2_EST) + "/" + AllTrim(CC2->CC2_MUN) + "]" + QUEB_2_LINHAS
+						::setError( cMsgErro + ::getError() )
+						cInconsis   := cMsgErro + ::getError()
+						BREAK
+					endif
+				else
+					::setError( "Erro na consulta da localidade " + AllTrim(CC2->CC2_EST) + ' - ' + AllTrim(CC2->CC2_MUN) + QUEB_2_LINHAS )
+					cInconsis := "Erro na consulta da localidade " + AllTrim(CC2->CC2_EST) + ' - ' + AllTrim(CC2->CC2_MUN) + QUEB_2_LINHAS
+					BREAK
+				endif
+
+			END SEQUENCE
+
+			If !lRet 
+				If Empty(cInconsis)
+					If !lLoteConsult
+						::showMsgLog(,.T.,.T.)
+					EndIf 
+				Else
+					If !lLoteConsult
+						::showMsgLog(cInconsis,.T.,.T.)
+					EndIf
+				EndIf 
+			Else 
+				If !lLoteConsult
+			   	ApMsgInfo("Transmissão realizada com sucesso!","FLEETCOR")
+				EndIf
+			EndIf
+		Else 
+			If !lLoteConsult
+				::showMsgLog(,.T.,.T.)
+			EndIf
+		Endif
+	Else 
+		If !lLoteConsult
+			::showMsgLog(,.T.,.T.)	
+		EndIf
+	Endif
+
+	AEval(aAreaCC2, {|x| RestArea(x)})
+
+Return lRet
+
+//-------------------------------------------------------------------
+method gravaLocalidade(cPrefixo) class IntegFleetcor
+	local lRet          := .F.
+	local aListaCidad	:= {}
+	local nCidade		:= 0
+	local cMsgErro		:= ""
+	local cSufixo     := ':_Localidades'
+
+	private oTempXML    := ::getXMLRetorno()
+	private oXMLRet     := nil
+
+	cMsgErro		:= "Estado/Município: [" + AllTrim(CC2->CC2_EST) + "/" + AllTrim(CC2->CC2_MUN) + "]" + QUEB_2_LINHAS
+
+	if type('oTempXML' + cPrefixo + cSufixo) == "A"
+		aListaCidad	:= &('oTempXML' + cPrefixo + cSufixo)
+		If len(aListaCidad) > 0
+			For nCidade := 1 to len(aListaCidad)
+				oXMLRet		:= aListaCidad[nCidade]
+				lRet        := .T.
+				If Upper(AllTrim(self:getValueXML(oXMLRet,':_Localidade',''))) == Upper(AllTrim(CC2->CC2_MUN))
+					If Reclock("CC2",.F.)
+						CC2->CC2_ZZCODL     := ::getValueXML(oXMLRet,':_CodigoLocalidade','')
+						CC2->CC2_ZZLATI     := ::getValueXML(oXMLRet,':_Latitude','')
+						CC2->CC2_ZZLONG     := ::getValueXML(oXMLRet,':_Longitude','')
+						CC2->CC2_ZZCDIB     := ::getValueXML(oXMLRet,':_CodigoIBGELocalidade','')
+						CC2->(MsUnlock())
+					endif
+				endif
+			next
+		else
+			::setError(cMsgErro + 'Não localizado o municipio [' + AllTrim(CC2->CC2_EST) + '/' + AllTrim(CC2->CC2_MUN) + '] na Fleetcor.')
+		endif
+	elseif type('oTempXML' + cPrefixo) == "O"
+		oXMLRet		:= &("oTempXML" + cPrefixo)
+		lRet		:= .T.
+		If Reclock("CC2",.F.)
+			CC2->CC2_ZZCODL     := ::getValueXML(oXMLRet,':_Localidades:_CodigoLocalidade','')
+			CC2->CC2_ZZLATI     := ::getValueXML(oXMLRet,':_Localidades:_Latitude','')
+			CC2->CC2_ZZLONG     := ::getValueXML(oXMLRet,':_Localidades:_Longitude','')
+			CC2->CC2_ZZCDIB     := ::getValueXML(oXMLRet,':_Localidades:_CodigoIBGELocalidade','')
+			CC2->(MsUnlock())
+		endif
+	else
+		::setError(cMsgErro + 'Não localizada a tag [' + cPrefixo + '] no XML de retorno: ' + ::getRetorno() )
+	endif
+
+return lRet
+
+//-------------------------------------------------------------------
+Method GravaRota(cPrefixo,cRota) class IntegFleetcor
+
+	local lRet        := .F.
+	local cMsgErro		:= ""
+
+	private oTempXML    := ::getXMLRetorno()
+	private oXMLRet     := nil
+
+	cMsgErro		:= "Rota: [" + cRota + "]" + QUEB_2_LINHAS
+
+	If Type("oTempXml" + self:cPrefPad + cPrefixo) == "O"
+		oXMLRet	:= &("oTempXML" + self:cPrefPad + cPrefixo)
+		lRet		:= .T.
+		If Reclock("SZJ",.F.)
+			SZJ->ZJ_CODROT	:= ::getValueXML(oXMLRet,':_Rota:_CodigoRota','')
+			SZJ->(MsUnlock())
+		endif
+	Else
+		::setError(cMsgErro + 'Não localizada a tag [' + cPrefixo + '] no XML de retorno: ' + ::getRetorno() )
+	Endif
+
+Return lRet
+
+//-------------------------------------------------------------------
+Method RetornaPedagio(cPrefixo,cRota) class IntegFleetcor 
+
+	local lRet        := .F.
+	local cMsgErro		:= ""
+	Local aAux	 	 	:= {}
+
+	private oTempXML    := ::getXMLRetorno()
+	private oXMLRet     := nil
+
+	cMsgErro		:= "Rota: [" + cRota + "]" + QUEB_2_LINHAS
+
+	If Type("oTempXml" + self:cPrefPad + cPrefixo) == "O"
+		oXMLRet	:= &("oTempXML" + self:cPrefPad + cPrefixo)
+		AADD(aAux, ::getValueXML(oXMLRet,':_QtdeCupons'))
+		AADD(aAux, ::getValueXML(oXMLRet,':_QtdeEixos'))
+		AADD(aAux, ::getValueXML(oXMLRet,':_ValorTarifaPedagio'))		
+		lRet		:= .T.
+	Else
+		::setError(cMsgErro + 'Não localizada a tag [' + cPrefixo + '] no XML de retorno: ' + ::getRetorno() )
+	Endif
+
+Return ( aAux )
+
+//-------------------------------------------------------------------
+method addCustomComplex(aTemp) class IntegFleetcor
+	aAdd( ::aCustomComplex, aTemp )
+return
+
+//-------------------------------------------------------------------
+method getValueXML(oXMLRet,cPropriedade,xDefault) class IntegFleetcor
+	local xContent
+	if type('oXMLRet'+cPropriedade) == "O"
+		xContent    := &('oXMLRet' + cPropriedade + ':TEXT')
+	else
+		xContent    := xDefault
+	endif
+return xContent
+
+//-------------------------------------------------------------------
+method isXMLSuccess(cXML,cPrefixo,cNode) class IntegFleetcor
+
+	local lRet          := .F.
+	local cError        := ""
+	local cWarning      := ""
+	Local cFault        := ":_SOAP_FAULT"
+	private oXML        := nil
+
+	default cXML        := ""
+	default cPrefixo    := ""
+
+	if !empty(cXML)
+		oXML    := XmlParser( cXML, "_", @cError, @cWarning )
+		lRet    := valtype(oXML) == "O"
+		if lRet
+			lRet		:= .F.
+			self:setXMLRetorno(oXML)
+			self:setRetorno(cXML)
+
+			if type("oXml" + self:cPrefPad + cFault) == "O"			
+				cMsgFault := &("oXml" + self:cPrefPad + cFault + ":_FAULTSTRING:TEXT")
+				If !Empty(cMsgFault)
+				   ::setError( 'Erro na comunicação [' + cMsgFault + ']' )
+				EndIf 
+			Elseif type("oXml" + self:cPrefPad + cPrefixo + cNode) == "O"
+				lRet        := &("oXml" + self:cPrefPad + cPrefixo + cNode + ":TEXT") == "SUCESSO"
+				if !lRet
+					If type("oXml" + self:cPrefPad + cPrefixo + ':_Excecao:_MensagemExcecao' ) == "O"
+						self:setError( &("oXml" + self:cPrefPad + cPrefixo + ':_Excecao:_MensagemExcecao:TEXT' ) )
+					else
+						self:setError( &("oXml" + self:cPrefPad + cPrefixo + cNode + ":TEXT") )
+					endif
+				endif
+			else
+				::setError( 'Propriedade não localizada no XML [' + cPrefixo + cNode + ']' )
+			endif
+		else
+			::setError( 'Não foi possível parsear o XML de Retorno' + QUEB_2_LINHAS + cXML )
+		endif
+	else
+		::setError( 'XML vazio' )
+	endif
+
+return lRet
+
+//-------------------------------------------------------------------
+method initWSDL(cRota) class IntegFleetcor
+
+	local lRet        := .F.
+	default cRota 		:= "" 
+
+	if valtype(self:oWS) == "O"
+		freeObj(self:oWS)
+		freeObj(self:oXMLRetorno)
+		self:cXMLRetorno        := ''
+		self:cXMLEnvio			:= ''
+	endif
+
+	self:oWS    := TWsdlManager():New()
+	self:configuraWS()
+	lRet        := self:oWs:ParseURL( ::getURLWSDL() )
+	if !lRet
+		::setError('Erro no parse da URL ' + ::getURLWSDL() )
+	endif
+return lRet
+
+//-------------------------------------------------------------------
+method trySetValueWS(cCampo,cConteudo,lVazio as logical) class IntegFleetcor
+	local aSimple       := ::getSimpleField()
+	local nPosicao      := aScan( aSimple, {|x| x[2] == cCampo } )
+	local lRet          := .F.
+
+	default cCampo		:= ""
+	default cConteudo	:= ""
+	default lVazio		:= .F.
+
+	if nPosicao == 0
+		::setError( "Não localizado o campo [" + cCampo + "]" )
+	else
+		if lVazio .and. empty(cConteudo)
+			lRet		:= .T.
+		elseif self:oWs:SetValue( aSimple[nPosicao][1], cConteudo )
+			lRet            := .T.
+		else
+			::setError( "Erro ao configurar o campo [" + cCampo + "]" )
+		endif
+	endif
+return lRet
+
+//-------------------------------------------------------------------
+method trySetHeader(cCampo,cConteudo) class IntegFleetcor
+
+	local lRet		:= .T.
+
+	If !self:oWs:AddHttpHeader( cCampo, cConteudo )
+		::setError( 'Erro ao adicionar o header [' + cCampo + '] com [' + "https://ws.rodocred.com.br/ManterVeiculo" + ']' )
+		lRet		:= .F.
+	endif
+
+return lRet
+
+//-------------------------------------------------------------------
+method adjustString(cString) class IntegFleetcor
+	cString					:= StrTran(cString,"&","E")
+	cString					:= StrTran(cString, "<?xml version='1.0' encoding='UTF-8' standalone='no' ?>", "")
+	cString					:= StrTran(cString, '<?xml version="1.0" encoding="utf-8"?>', "")
+return cString
+
+//-------------------------------------------------------------------
+method configuraWS() class IntegFleetcor
+
+	self:oWs:nTimeout		:= 120
+	self:oWs:lRemEmptyTags 	:= .T.
+	self:oWs:lProcResp 		:= .F.
+	self:oWs:lSSLInsecure	:= .T.
+	self:oWs:lCheckInput    := .F.
+	self:oWs:lUseNSPrefix   := .T. //NameSpace
+	self:oWS:lVerbose		:= .T.
+	self:oWs:nSOAPVersion	:= 0 //https://tdn.totvs.com/display/tec/TWsdlManager%3AnSOAPVersion
+	//TODO self:oWs:lAlwaysSendSA	:= .T. //https://tdn.totvs.com/display/tec/TWsdlManager%3AlAlwaysSendSA
+
+return
+
+//-------------------------------------------------------------------
+method setTokenByXML(cXML) class IntegFleetcor
+	local cTempXML      := ""
+	local lRet          := .F.
+	local cError        := ""
+	local cWarning      := ""
+
+	private oRetMsg     := nil
+	private oXML        := nil
+
+	cTempXML        := self:adJustString(cXML)
+	oXML            := XmlParser( cTempXML, "_", @cError, @cWarning )
+	lRet            := valtype(oXML) == "O"
+
+	If lRet
+		lRet            := .F.
+		if type("oXML" + self:cPrefPad +  ":_AutenticarClienteResponse:_RetornoMensagem") == "O"
+			oRetMsg     := &("oXML" + self:cPrefPad +  ":_AutenticarClienteResponse:_RetornoMensagem")
+			If type("oRetMsg:_IdentificacaoIntegracao:_TokenAutenticacao") == "O"
+				lRet        := .T.
+				::setToken( oRetMsg:_IdentificacaoIntegracao:_TokenAutenticacao:TEXT )
+			else
+				setError( "Não localizado tag de token no retorno no XML: " + cTempXML )
+			endif
+		else
+			setError( "Não localizado tag de retorno no XML: " + cTempXML )
+		endif
+	else
+		setError( "Erro no parse do XML: " + cTempXML )
+	endif
+
+return lRet
+
+//-------------------------------------------------------------------
+method getURLWSDL() class IntegFleetcor
+return self:cWSDL
+
+//-------------------------------------------------------------------
+method getError() class IntegFleetcor
+return self:cError
+
+//-------------------------------------------------------------------
+method getToken() class IntegFleetcor
+return self:cToken
+
+//-------------------------------------------------------------------
+method getSimpleField() class IntegFleetcor
+return self:aSimpleField
+
+//-------------------------------------------------------------------
+method getComplexField() class IntegFleetcor
+return self:aComplexField
+
+//-------------------------------------------------------------------
+method getXMLRetorno() class IntegFleetcor
+return self:oXMLRetorno
+
+//-------------------------------------------------------------------
+method getRetorno() class IntegFleetcor
+return self:cXMLRetorno
+
+//-------------------------------------------------------------------
+method getEnvio() class IntegFleetcor
+return self:cXMLEnvio
+
+//-------------------------------------------------------------------
+method setError(cErrorDefault) class IntegFleetcor
+
+	default cErrorDefault       := ""
+
+	if empty(self:oWs:cError)
+		self:cError     := cErrorDefault
+	else
+		self:cError     :=  iif(empty(cErrorDefault),self:oWs:cError,cErrorDefault + '-' + self:oWs:cError)
+	endif
+	::showMsgLog(self:cError,.F.,.F.)
+return
+
+//-------------------------------------------------------------------
+method setToken(cToken) class IntegFleetcor
+	self:cToken     := cToken
+return
+
+//-------------------------------------------------------------------
+method setXMLRetorno(oXMLRetorno) class IntegFleetcor
+	self:oXMLRetorno     := oXMLRetorno
+return
+
+//-------------------------------------------------------------------
+method setRetorno(cXMLRetorno) class IntegFleetcor
+	self:cXMLRetorno     := cXMLRetorno
+return
+
+//-------------------------------------------------------------------
+method setEnvio(cXMLEnvio) class IntegFleetcor
+	self:cXMLEnvio     := cXMLEnvio
+return
+
+//-------------------------------------------------------------------
+method setOperationWS(cOperation) class IntegFleetcor
+	local lRet          := self:oWs:SetOperation( cOperation )
+	local nI            := 0
+	local nPosicao		:= 0
+	local nOcorr		:= 0
+	local cId			:= ""
+	if lRet
+		self:aComplexField      := self:oWs:ComplexInput()
+		for nI := 1 to len(self:aComplexField)
+			cId			:= self:aComplexField[nI][POS_NOME_TPCOMPLEX]
+			nPosicao	:= aScan( self:aCustomComplex, { |x| x[1] == cID } )
+			if nPosicao > 0
+				nOcorr		:= self:aCustomComplex[nPosicao,2]
+			else
+				nOcorr		:= 0
+			endif
+
+/*			If !self:oWs:SetComplexOccurs( self:aComplexField[nI][POS_ID_TPCOMPLEX],nOcorr )
+				lRet        := .F.
+				::setError('Erro na configuração da quantidade [' + CValToChar(nOcorr) + '] do campo Complexo: ' + self:aComplexField[nI][POS_NOME_TPCOMPLEX] )
+				exit
+			endif
+*/
+		Next
+		self:aSimpleField       := self:oWs:SimpleInput()
+	else
+		::setError( "Erro ao selecionar o método " + cOperation )
+	endif
+return lRet
+
+//-------------------------------------------------------------------
+method setIdentific(cVersion as character) class IntegFleetcor
+
+	local lRet			:= .T.
+
+	if lRet .and. !::trySetValueWS('IdClienteRodocred', ::cIDCliente )
+		lRet        := .F.
+	endif
+
+	if lRet .and. !empty(::getToken()) .and. !::trySetValueWS('TokenAutenticacao', ::getToken() )
+		lRet        := .F.
+	endif
+
+	if lRet .and. !::trySetValueWS('NumeroTransacao', ::cSenha )
+		lRet        := .F.
+	endif
+
+	if lRet .and. !empty(cVersion)
+		if !::trySetValueWS('VersaoServico', cVersion )
+			lRet        := .F.
+		endif
+	endif
+
+return lRet
+
+//-------------------------------------------------------------------
+method setIsInJob(lJob) class IntegFleetcor
+	self:lJob           := lJob
+return
+
+//-------------------------------------------------------------------
+method integLocalidades(lLoteEnvio) class IntegFleetcor
+
+	local nQtdRegs             := 0
+	local nReg						:= 0
+	local cAliasCC2            := getnextalias()
+	local aAreaCC2             := CC2->(GetArea())
+
+	DEFAULT lLoteEnvio := .F. 
+
+	If !lLoteEnvio
+		BarGauge1Set(2)
+		IncProcG1('Consultando LOCALIDADE...')
+		::consultLocalid()
+		IncProcG1('Finalizando LOCALIDADE...')
+	Else
+		If !ApMsgYesNo("Deseja consultar as coordenadas de todas as localidades nesse momento?","FLEETCOR")
+			Return 
+		EndIf 
+
+		BEGINSQL Alias cAliasCC2 
+			SELECT CC2.CC2_FILIAL, CC2.R_E_C_N_O_ CC2_REC 
+			FROM %Table:CC2% CC2
+			WHERE CC2_FILIAL = %Exp:xFilial("CC2")%
+				AND CC2_ZZCODL = ''
+				AND CC2.%NotDel%
+				ORDER BY CC2_FILIAL, CC2_EST, CC2_CODMUN
+		ENDSQL
+
+		If (cAliasCC2)->(Eof())
+		   ApMsgInfo("Nenhum localidade está pendente de coordenadas de envio")
+			(cAliasCC2)->(dbCloseArea())
+			Return .T.
+		EndIf 
+		
+		(cAliasCC2)->(dbEval({||nQtdRegs++}))
+		(cAliasCC2)->(DbGoTop())
+
+		BarGauge1Set(2)
+		IncProcG1('Consultando LOCALIDADES...')
+		BarGauge2Set(nQtdRegs)
+		CC2->(DbSetOrder(1)) //CC2_FILIAL+CC2_EST+CC2_CODMUN
+		while (cAliasCC2)->(!Eof())
+			nReg++
+			IncProcG2('Processando ' + CValToChar(nReg) +  ' de ' + CValToChar(nQtdRegs) +  ' ...')
+			CC2->(DbGoTo( (cAliasCC2)->CC2_REC ))
+			::consultLocalid(.T.)
+			(cAliasCC2)->(dbskip())
+		endDo
+		IncProcG1('Finalizando LOCALIDADES...')
+		(cAliasCC2)->(DbCloseArea())
+
+	Endif
+
+	RestArea(aAreaCC2)
+
+Return
+
+//-------------------------------------------------------------------
+method integTransport() class IntegFleetcor
+
+	local lRet          		:= .T.
+	local cMsg          		:= ''
+	local cRetorno      		:= ''
+	local aAreas            := { SA4->(GetArea()), SA2->(GetArea()), GU3->(GetArea()), GetArea() }
+	local cXml 					:= ''
+	local cInconsis         := ''
+
+	if !self:lJob
+		ProcRegua(1)
+	endif
+
+	if ::autenticaUsuario()
+
+		If ::initWSDL()
+
+			BEGIN SEQUENCE 
+
+				if !self:setOperationWS('ManterTransportador')
+					lRet        := .F.
+					break
+				endif
+
+				If Empty(::GetToken())
+					lRet := .F. 
+					Break 
+				EndIf 
+
+				SA2->(DbSetOrder(3)) //A2_FILIAL+A2_CGC
+				GU3->(DbSetOrder(12)) //GU3_FILIAL+GU3_CDERP+GU3_CDCERP
+				If !SA2->(DbSeek( FwXFilial("SA2") + SA4->A4_CGC ))
+					cInconsis := 'Não localizado fornecedor com o CPF/CNPJ ' + SA4->A4_CGC
+					lRet        := .F.
+					break
+				Endif
+
+				If Empty(SA2->A2_INSCRM)
+					cInconsis   := 'Inscrição Municipal não cadastrada no fornecedor de transporte ' + SA2->A2_COD + ". Entre no cadastro de fornecedores, acesse o código citado, e atualize a Inscrição Municipal."
+					lRet        := .F.
+					break
+				Endif
+
+				If !GU3->(DbSeek( FwXFilial("GU3") + SA2->A2_COD + SA2->A2_LOJA ))
+					cInconsis := 'Não localizado emitente com o CPF/CNPJ ' + SA4->A4_CGC
+					lRet        := .F.
+					break
+				endif
+
+				If !empty(GU3->GU3_ANTT)
+					cInconsis := 'RNTRC não preenchido no fornecedor ' + SA2->A2_COD + "/" + SA2->A2_LOJA + " emitente " + GU3->GU3_CDEMIT
+					lRet        := .F.
+					break
+				endif
+
+				// Busca os contatos do tranportador
+				lContato := .F.
+				If GU2->(dbSeek(GU3->GU3_FILIAL+GU3->GU3_CDEMIT))
+				   cCdEmit := GU3->GU3_FILIAL+GU3->GU3_CDEMIT
+					While GU2->(!Eof()) .And. GU2->GU2_FILIAL+GU2->GU2_CDEMIT == cCdEmit
+					   If GU2->GU2_SIT == '1'
+						   lContato := .T.
+						   Exit 
+						EndIf 
+						GU2->(dbSkip())
+					End 
+					If !lContato 
+						cInconsis := 'Dados do contato do transportador não cadastrados, ou existem contatos não ativos. Verifique o cadastro de emitentes do GFE para o código '+GU3->GU3_CDEMIT
+						lRet      := .F.
+						break
+					EndIf 
+				Else 
+					cInconsis := 'Dados do contato do transportador não cadastrados, ou existem contatos não ativos.'+CRLF+CRLF+'Verifique o cadastro de emitentes do GFE para o código '+GU3->GU3_CDEMIT
+					lRet      := .F.
+					break
+				EndIf 
+
+				// Busca o número do endereço para formar TAG 
+				nNumEnd := AT(",",AllTrim(SA4->A4_END))
+				If nNumEnd == 0
+					cNumEnd := "SN"
+				Else 
+					cNumEnd := AllTrim(SubStr(AllTrim(SA4->A4_END),nNumEnd+1))
+				EndIf 
+
+				cXML	+= '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="https://ws.rodocred.com.br/">' + CRLF
+				cXML	+= '   <soapenv:Header/>' + CRLF
+				cXML	+= '   <soapenv:Body>' + CRLF
+				cXML	+= '      <ws:ManterTransportadorRequest>' + CRLF
+				cXML	+= '			<ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '				<ws:IdClienteRodocred>'+self:cIDCliente+'</ws:IdClienteRodocred>' + CRLF
+				cXML	+= '				<ws:TokenAutenticacao>' + ::GetToken() +'</ws:TokenAutenticacao>' + CRLF
+				cXML	+= '				<ws:NumeroTransacao>'+self:cSenha+'</ws:NumeroTransacao>' + CRLF
+				cXML	+= '				<ws:VersaoServico>1.01</ws:VersaoServico>' + CRLF
+				cXML	+= '			</ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '			<ws:Operacao>'+iif(SA4->A4_ZZINTEG==INTEG_SUCESSO,"ALT","INC")+'</ws:Operacao>' + CRLF
+				cXML	+= '			<ws:IdClienteResponsavel>'+self:cIDCliente+'</ws:IdClienteResponsavel>' + CRLF
+				cXML	+= '			<ws:ListaTransportador>' + CRLF
+				cXML	+= '				<ws:DadosTransportador>' + CRLF
+				cXML	+= '					<ws:Transportador>' + CRLF
+				cXML	+= '						<ws:CNPJCPFTransportador>'+AllTrim(SA4->A4_CGC)+'</ws:CNPJCPFTransportador>' + CRLF
+				cXML  += '						<ws:RNTRC>99999999</ws:RNTRC>
+				cXML	+= '						<ws:NomeTransportador>'+AllTrim(SA4->A4_NOME)+'</ws:NomeTransportador>' + CRLF				
+				cXML	+= '					</ws:Transportador>' + CRLF
+				cXML	+= '					<ws:TipoTransportador>ETC</ws:TipoTransportador>' + CRLF
+				cXML	+= '					<ws:Contato>' + CRLF
+				cXML	+= '						<ws:TipoContato>C</ws:TipoContato>' + CRLF
+				cXML	+= '						<ws:Nome>'+AllTrim(GU2->GU2_NOME)+'</ws:Nome>' + CRLF
+				cXML	+= '						<ws:Telefone>'+AllTrim(GU2->GU2_FONE1)+'</ws:Telefone>' + CRLF
+				cXML	+= '						<ws:Celular></ws:Celular>' + CRLF
+				cXML	+= '						<ws:Email></ws:Email>' + CRLF
+				cXML	+= '						<ws:MeioComunicacaoPreferido>Telefone</ws:MeioComunicacaoPreferido>' + CRLF
+				cXML	+= '						<ws:CPF>'+AllTrim(GU2->GU2_ZZCPF)+'</ws:CPF>' + CRLF
+				cXML	+= '						<ws:Cargo>'+AllTrim(GU2->GU2_CARGO)+'</ws:Cargo>' + CRLF
+				cXML	+= '					</ws:Contato>' + CRLF
+				cXML	+= '					<ws:Endereco>' + CRLF
+				cXML	+= '						<ws:TipoEndereco>C</ws:TipoEndereco>' + CRLF
+				cXML	+= '						<ws:CEP>'+AllTrim(SA4->A4_CEP)+'</ws:CEP>' + CRLF
+				cXML	+= '						<ws:TipoLogradouro>Rua</ws:TipoLogradouro>' + CRLF
+				cXML	+= '						<ws:Logradouro>'+AllTrim(SA4->A4_END)+'</ws:Logradouro>' + CRLF
+				cXML  += '						<ws:Numero>'+cNumEnd+'</ws:Numero>' + CRLF
+				cXML	+= '						<ws:Complemento>'+AllTrim(SA4->A4_COMPLEM)+'</ws:Complemento>' + CRLF
+				cXML	+= '						<ws:Bairro>'+AllTrim(SA4->A4_BAIRRO)+'</ws:Bairro>' + CRLF
+				cXML	+= '						<ws:Cidade>'+AllTrim(SA4->A4_MUN)+'</ws:Cidade>' + CRLF
+				cXML	+= '						<ws:Estado>'+AllTrim(SA4->A4_EST)+'</ws:Estado>' + CRLF
+				cXML	+= '					</ws:Endereco>' + CRLF				
+            cXML	+= '					<ws:TransportadorPJ>' + CRLF
+            cXML	+= '				      <ws:InscricaoMunicipal>'+AllTrim(SA2->A2_INSCRM)+'</ws:InscricaoMunicipal>' + CRLF
+            cXML	+= '				      <ws:InscricaoEstadual>'+AllTrim(SA4->A4_INSEST)+'</ws:InscricaoEstadual>' + CRLF
+            cXML	+= '				      <ws:NomeReduzido>'+AllTrim(SA4->A4_NREDUZ)+'</ws:NomeReduzido>' + CRLF
+            cXML	+= '				   </ws:TransportadorPJ>' + CRLF
+				cXML	+= '				</ws:DadosTransportador>' + CRLF
+				cXML	+= '				<ws:ValidaTransportadorANTT>false</ws:ValidaTransportadorANTT>' + CRLF
+				cXML	+= '				<ws:ValidaFrotaANTT>false</ws:ValidaFrotaANTT>' + CRLF
+				cXML	+= '			</ws:ListaTransportador>' + CRLF
+				cXML	+= '		</ws:ManterTransportadorRequest>' + CRLF
+				cXML	+= '   </soapenv:Body>' + CRLF
+				cXML	+= '</soapenv:Envelope>' + CRLF
+
+				cMsg                 := self:adjustString( self:oWs:GetSoapMsg() )
+				cMsg						:= StrTran(cMsg, 'xmlns="https://ws.rodocred.com.br/"', "")
+				cMsg						:= StrTran(cMsg,'SOAP-ENV','soapenv')
+				
+				//Envia registro pra Fleetcor
+				self:setEnvio(cXML)
+				lRet                        := self:oWs:SendSoapMsg(EncodeUtf8(cXML))
+
+				if lRet
+					cRetorno        := self:adJustString( self:oWs:GetSoapResponse() )
+					self:setXMLRetorno( cRetorno )
+					lRet            := ::isXMLSuccess(cRetorno,':_ManterTransportadorResponse:_TranportadorRetorno',':_StatusRetorno')
+					If !lRet
+						::showMsgLog(cRetorno,.T.,.T.)
+					EndIf
+					break
+				endif
+
+			END SEQUENCE
+
+			::gravaStatus(lRet,TABELA_TRANSPORT)
+			If !lRet 
+				If Empty(cInconsis)
+					::showMsgLog(,.T.,.T.)
+				Else
+					::showMsgLog(cInconsis,.T.,.T.)
+				EndIf 
+			Else 
+			   ApMsgInfo("Transmissão realizada com sucesso!","FLEETCOR")
+			EndIf
+		Else 
+			::showMsgLog(,.T.,.T.)
+		Endif
+	Else 
+		::showMsgLog(,.T.,.T.)	
+	Endif
+
+	AEval(aAreas, {|x| RestArea(x)})
+
+Return
+
+//-------------------------------------------------------------------
+method integVeiculo() class IntegFleetcor
+
+	local lRet          		:= .T.
+	local cMsg          		:= ''
+	local cRetorno      		:= ''
+	LOCAL cInconsis         := ""
+	local cXML					:= ''
+	local aAreaGU8              := GU8->(GetArea())
+
+	if !self:lJob
+		ProcRegua(1)
+	endif
+
+	if ::autenticaUsuario()
+
+		If ::initWSDL()
+
+			BEGIN SEQUENCE 
+
+				if !self:setOperationWS('ManterVeiculo')
+					lRet        := .F.
+					break
+				endif
+
+				If Empty(::GetToken())
+					lRet := .F. 
+					Break 
+				EndIf 
+
+				DA3->(dbSetOrder(3))
+				If !DA3->(dbSeek(xFilial()+GU8->GU8_PLACA))
+					cInconsis := "Placa do veículo não encontrada"
+					lRet := .F. 
+					BREAK
+				EndIf 
+				If DA3->(Empty(DA3->DA3_CORVEI))
+					cInconsis := "Cor do veículo não definida. Verifique o campo DA3_CORVEI (Cor) no cadastro de veículos do OMS"
+					lRet := .F. 
+					BREAK
+				EndIf 
+				GV3->(dbSetOrder(1))
+				If !GV3->(dbSeek(xFilial()+DA3->DA3_TIPVEI))
+					cInconsis := "Tipo de veículo não cadastrado. Verifique o campo DA3_TIPVEI (Tipo Veiculo) no cadastro de veículos do OMS"
+					lRet := .F.
+					BREAK 
+				EndIf
+				DUT->(dbSetOrder(1))
+				If !DUT->(dbSeek(xFilial()+DA3->DA3_TIPVEI))
+					cInconsis := "Tipo de veículo não cadastrado no GFE. Verifique o cadastro de tipos de veículo do GFE"
+					lRet := .F.
+					BREAK 
+				EndIf
+				If Empty(DA3->DA3_ZZTRAN)
+					cInconsis := "Transportadora não definida. Verifique o cadastro do veículo no GFE e informe o código da transportadora."
+					lRet := .F.
+					BREAK 
+				EndIf
+				SA4->(dbSetOrder(1))
+				If !SA4->(dbSeek(xFilial()+DA3->DA3_ZZTRAN))
+					cInconsis := "Transportadora não cadastrada. Verifique o cadastro do veículo no GFE e informe um código de transportadora válido."
+					lRet := .F.
+					BREAK 
+				EndIf 
+				If Empty(SA4->A4_CGC)
+					cInconsis := "CNPJ da Transportadora não informado em seu cadastro. Verifique."
+					lRet := .F.
+					BREAK 
+				Endif 
+				If Empty(DUT->DUT_CATVEI)
+					cInconsis := "Categoria do veículo não cadastrado no GFE. Verifique o cadastro de tipos de veículo do GFE"
+					lRet := .F.
+					BREAK 
+				EndIf 
+				If DA3->DA3_QTDEIX == 0
+					cInconsis := "Qtde de eixos não informada no veículo. Verifique o cadastro de veículos do OMS"
+					lRet := .F.
+					BREAK 
+				EndIf 
+				If Empty(GU8->GU8_PLACA)				
+					cInconsis := "Número da placa não preenchido. Verifique o veículo no GFE."
+					lRet := .F.
+					BREAK 
+				EndIf 
+				If Empty(GU8->GU8_UFPLAC)				
+					cInconsis := "UF da placa não preenchido. Verifique o veículo no GFE."
+					lRet := .F.
+					BREAK 
+				EndIf 
+
+				cCor := ""
+				aCor := FwGetSX5("M7")
+				nPos := ASCan(aCor,{|x| AllTrim(x[3])==AllTrim(DA3->DA3_CORVEI)})
+				If nPos > 0
+				   cCor := AllTrim(aCor[nPos,4])
+					If UPPER(cCor) == "BRANCO"
+					   cCor := "BRANCA"
+					ElseIf UPPER(cCor) == "PRETO"
+					   cCor := "PRETA"
+					EndiF
+				EndIf 
+
+				cXML	+= '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="https://ws.rodocred.com.br/">' + CRLF
+				cXML	+= '   <soapenv:Header/>' + CRLF
+				cXML	+= '   <soapenv:Body>' + CRLF
+				cXML	+= '      <ws:ManterVeiculoRequest>' + CRLF
+				cXML	+= '			<ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '				<ws:IdClienteRodocred>'+self:cIDCliente+'</ws:IdClienteRodocred>' + CRLF
+				cXML	+= '				<ws:TokenAutenticacao>' + ::GetToken() +'</ws:TokenAutenticacao>' + CRLF
+				cXML	+= '				<ws:NumeroTransacao>'+self:cSenha+'</ws:NumeroTransacao>' + CRLF
+				cXML	+= '				<ws:VersaoServico>1.01</ws:VersaoServico>' + CRLF
+				cXML	+= '			</ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '			<ws:Operacao>'+iif(GU8->GU8_ZZINTE==INTEG_SUCESSO,"ALT","INC")+'</ws:Operacao>' + CRLF
+				cXML	+= '			<ws:IdClienteResponsavel>'+self:cIDCliente+'</ws:IdClienteResponsavel>' + CRLF
+				cXML	+= '			<ws:ListaVeiculos>' + CRLF
+				cXML	+= '				<ws:Veiculo>' + CRLF
+				cXML	+= '					<ws:TipoTransporteVeiculo>P</ws:TipoTransporteVeiculo>' + CRLF
+				cXML	+= '					<ws:TipoVeiculo>3</ws:TipoVeiculo>' + CRLF
+				cXML	+= '					<ws:QtdeEixos>'+AllTrim(Str(DA3->DA3_QTDEIX))+'</ws:QtdeEixos>' + CRLF
+				cXML	+= '					<ws:TipoRodagem>D</ws:TipoRodagem>' + CRLF
+				cXML	+= '					<ws:PlacaVeiculo>'+AllTrim(GU8->GU8_PLACA)+'</ws:PlacaVeiculo>' + CRLF
+				cXML	+= '					<ws:UfPlacaVeiculo>'+AllTrim(GU8->GU8_UFPLAC)+'</ws:UfPlacaVeiculo>' + CRLF
+				cXML	+= '					<ws:TipoCombustivelVeiculo>1</ws:TipoCombustivelVeiculo>' + CRLF
+				cXML	+= '					<ws:CapacidadeTanqueVeiculo>50</ws:CapacidadeTanqueVeiculo>' + CRLF
+				cXML	+= '					<ws:MediaConsumoVeiculo>15</ws:MediaConsumoVeiculo>' + CRLF
+				cXML	+= '					<ws:Cor>'+cCor+'</ws:Cor>' + CRLF
+				cXML	+= '					<ws:CategoriaCRLV>1</ws:CategoriaCRLV>' + CRLF
+				cXML	+= '				</ws:Veiculo>' + CRLF
+				cXML	+= '				<ws:ValidaFrotaANTT>false</ws:ValidaFrotaANTT>' + CRLF
+				cXML	+= '			</ws:ListaVeiculos>' + CRLF
+				cXML	+= '		</ws:ManterVeiculoRequest>' + CRLF
+				cXML	+= '   </soapenv:Body>' + CRLF
+				cXML	+= '</soapenv:Envelope>' + CRLF
+
+				cMsg                 := self:adjustString( self:oWs:GetSoapMsg() )
+				cMsg						:= StrTran(cMsg, 'xmlns="https://ws.rodocred.com.br/"', "")
+				cMsg						:= StrTran(cMsg,'SOAP-ENV','soapenv')
+				
+				//Envia registro pra Fleetcor
+				self:setEnvio(cXML)
+				lRet                        := self:oWs:SendSoapMsg(EncodeUtf8(cXML))
+
+				If lRet
+					cRetorno        := self:adJustString( self:oWs:GetSoapResponse() )
+					self:setXMLRetorno( cRetorno )
+					lRet            := ::isXMLSuccess(cRetorno,':_ManterVeiculoResponse:_Veiculos',':_StatusRetorno')
+					If !lRet
+						::showMsgLog(cRetorno,.T.,.T.)
+					EndIf
+					break
+				endif
+
+			END SEQUENCE
+			
+			::gravaStatus(lRet,TABELA_VEICULO)
+			If !lRet 
+				If Empty(cInconsis)
+					::showMsgLog(,.T.,.T.)
+				Else
+					::showMsgLog(cInconsis,.T.,.T.)
+				EndIf 
+			Else 
+			   ApMsgInfo("Transmissão realizada com sucesso!","FLEETCOR")
+			EndIf
+		Else 
+			::showMsgLog(,.T.,.T.)
+		Endif
+	Else 
+		::showMsgLog(,.T.,.T.)	
+	Endif
+
+	restArea(aAreaGU8)
+
+return
+
+//-------------------------------------------------------------------
+method integMotoristas() class IntegFleetcor
+
+	local lRet          		:= .T.
+	local cVersion      		:= '1.00'
+	local cMsg          		:= ''
+	local cRetorno      		:= ''
+	local aAreaDA4          := DA4->(GetArea())
+	local cXML					:= ''
+	local cInconsis         := ''
+	
+	if !self:lJob
+		ProcRegua(1)
+	endif
+
+	if ::autenticaUsuario()
+
+		If ::initWSDL()
+
+			BEGIN SEQUENCE 
+
+				if !self:setOperationWS('ManterMotorista')
+					lRet        := .F.
+					break
+				endif
+
+				If Empty(::GetToken())
+					lRet := .F. 
+					Break 
+				EndIf 
+
+				if !::setIdentific(cVersion)
+					lRet        := .F.
+					break
+				endif
+
+				If Empty(DA4->DA4_ZZTRAN)
+					cInconsis := "Transportadora não está configurada. Entre no cadastro de motoristas do OMS e informe uma Transportador válida."
+					lRet := .F. 
+					BREAK
+				EndIf 
+
+				SA4->(dbSetOrder(1))
+				If !SA4->(dbSeek(xFilial()+DA4->DA4_ZZTRAN))
+					cInconsis := "Transportadora não encontrada!"
+					lRet := .F. 
+					BREAK
+				EndIf 
+
+				If Empty(DA4->DA4_CGC)
+					cInconsis := "CPF do Motorista não informado em seu cadastro."
+					lRet := .F. 
+					BREAK
+				EndIf 
+
+				If Empty(DA4->DA4_NUMCNH)
+					cInconsis := "Número da CNH do motorista não informada em seu cadastro."
+					lRet := .F. 
+					BREAK
+				EndIf 
+
+				If Empty(DA4->DA4_CATCNH)
+					cInconsis := "Categoria da CNH do motorista não informada em seu cadastro."
+					lRet := .F. 
+					BREAK
+				EndIf 
+
+				If Empty(DA4->DA4_DATNAS)
+					cInconsis := "Data de Nascimento do motorista não cadastrada."
+					lRet := .F. 
+					BREAK
+				EndIf 
+
+				cDatNas := Dtoc(DA4->DA4_DATNAS)
+				cDatNas := SubStr(cDatNas,7,4)+'-'+SubStr(cDatNas,4,2)+'-'+SubStr(cDatNas,1,2)
+
+				cXML	+= '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="https://ws.rodocred.com.br/">' + CRLF
+				cXML	+= '   <soapenv:Header/>' + CRLF
+				cXML	+= '   <soapenv:Body>' + CRLF
+				cXML	+= '      <ws:ManterMotoristaRequest>' + CRLF
+				cXML	+= '			<ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '				<ws:IdClienteRodocred>'+self:cIDCliente+'</ws:IdClienteRodocred>' + CRLF
+				cXML	+= '				<ws:TokenAutenticacao>' + ::GetToken() +'</ws:TokenAutenticacao>' + CRLF
+				cXML	+= '				<ws:NumeroTransacao>'+self:cSenha+'</ws:NumeroTransacao>' + CRLF
+				cXML	+= '				<ws:VersaoServico>1.01</ws:VersaoServico>' + CRLF
+				cXML	+= '			</ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '			<ws:Operacao>'+iif(DA4->DA4_ZZINTE==INTEG_SUCESSO,"ALT","INC")+'</ws:Operacao>' + CRLF
+				cXML	+= '			<ws:IdClienteResponsavel>'+self:cIDCliente+'</ws:IdClienteResponsavel>' + CRLF
+				cXML	+= '			<ws:Transportador>' + CRLF
+				cXML	+= '				<ws:CNPJCPFTransportador>'+AllTrim(SA4->A4_CGC)+'</ws:CNPJCPFTransportador>' + CRLF
+				cXML  += '				<ws:RNTRC>99999999</ws:RNTRC>' + CRLF
+				cXML	+= '				<ws:NomeTransportador>'+AllTrim(SA4->A4_NOME)+'</ws:NomeTransportador>' + CRLF
+				cXML  += '			</ws:Transportador>' + CRLF
+				cXML	+= '			<ws:Motorista>' + CRLF
+				cXML	+= '				<ws:NomeMotorista>'+AllTrim(DA4->DA4_NOME)+'</ws:NomeMotorista>' + CRLF
+				cXML	+= '				<ws:CPFMotorista>'+AllTrim(DA4->DA4_CGC)+'</ws:CPFMotorista>' + CRLF
+				cXML	+= '				<ws:CNHMotorista>' + CRLF
+				cXML	+= '					<ws:NumeroCNH>'+AllTrim(DA4->DA4_NUMCNH)+'</ws:NumeroCNH>' + CRLF
+				cXML	+= '					<ws:CNHCategoria>'+AllTrim(DA4->DA4_CATCNH)+'</ws:CNHCategoria>' + CRLF
+				cXML	+= '				</ws:CNHMotorista>' + CRLF
+				cXML	+= '				<ws:Contato>' + CRLF
+				cXML	+= '					<ws:Nome>'+AllTrim(DA4->DA4_NREDUZ)+'</ws:Nome>' + CRLF
+				cXML	+= '					<ws:Telefone>'+AllTrim(DA4->DA4_TEL)+'</ws:Telefone>' + CRLF
+				cXML	+= '					<ws:CPF>'+AllTrim(DA4->DA4_CGC)+'</ws:CPF>' + CRLF
+				cXML	+= '					<ws:Cargo>MOTORISTA</ws:Cargo>' + CRLF
+				cXML	+= '				</ws:Contato>' + CRLF
+				cXML  += '				<ws:DataNascimento>'+cDatNas+'</ws:DataNascimento>' + CRLF
+				cXML  += '				<ws:Sexo>'+DA4->DA4_ZZSEXO+'</ws:Sexo>' + CRLF
+				cXML  += '				<ws:NomeMae>'+AllTrim(DA4->DA4_MAE)+'</ws:NomeMae>' + CRLF				
+				cXML	+= '			</ws:Motorista>' + CRLF
+				cXML	+= '		</ws:ManterMotoristaRequest>' + CRLF
+				cXML	+= '   </soapenv:Body>' + CRLF
+				cXML	+= '</soapenv:Envelope>' + CRLF
+
+				cMsg                 := self:adjustString( self:oWs:GetSoapMsg() )
+				cMsg						:= StrTran(cMsg, 'xmlns="https://ws.rodocred.com.br/"', "")
+				cMsg						:= StrTran(cMsg,'SOAP-ENV','soapenv')
+				
+				//Envia registro pra Fleetcor
+				self:setEnvio(cXML)
+				lRet                        := self:oWs:SendSoapMsg(EncodeUtf8(cXML))
+
+				If lRet
+					cRetorno        := self:adJustString( self:oWs:GetSoapResponse() )
+					self:setXMLRetorno( cRetorno )
+					lRet            := ::isXMLSuccess(cRetorno,':_ManterMotoristaResponse:_Motoristas',':_StatusRetorno')
+					If !lRet
+						::showMsgLog(cRetorno,.T.,.T.)
+					EndIf
+					break
+				Endif
+
+			END SEQUENCE
+			
+			::gravaStatus(lRet,TABELA_MOTORISTA)
+			If !lRet 
+				If Empty(cInconsis)
+					::showMsgLog(,.T.,.T.)
+				Else
+					::showMsgLog(cInconsis,.T.,.T.)
+				EndIf 
+			Else 
+			   ApMsgInfo("Transmissão realizada com sucesso!","FLEETCOR")
+			EndIf
+		Else 
+			::showMsgLog(,.T.,.T.)
+		Endif
+	Else 
+		::showMsgLog(,.T.,.T.)	
+	Endif
+
+	RestArea(aAreaDA4)
+
+Return
+
+//-------------------------------------------------------------------
+method integRotas(lLoteEnvio, aRegs) class IntegFleetcor
+
+	local lRet          		:= .T.
+	local cMsg          		:= ''
+	local cRetorno      		:= ''
+	local cXML          		:= ''
+	local cInconsis     		:= ''
+	local aAreaSZJ          := { SZJ->(GetArea()) }
+	local cNomeRota         := cMunOri := cMunDes := ""
+	LOCAL nW := 0
+
+	DEFAULT lLoteEnvio := .F.
+	DEFAULT aRegs		 := {}
+
+	BarGauge1Set(2)
+	IncProcG1('Transmitindo ROTAS...')
+
+	If Len(aRegs) == 0
+		AADD(aRegs,SZJ->(Recno()))
+	EndIf 
+
+	CC2->(dbSetOrder(1))
+	BarGauge2Set(Len(aRegs))
+	For nW := 1 To Len(aRegs)
+
+		lRet          		:= .T.
+		cMsg          		:= ''
+		cRetorno      		:= ''
+		cXML          		:= ''
+		cInconsis     		:= ''
+		cNomeRota         := cMunOri := cMunDes := ""
+
+	   SZJ->(dbGoto(aRegs[nW]))
+
+		if ::autenticaUsuario()
+
+			If ::initWSDL()
+
+				BEGIN SEQUENCE 
+
+					if !self:setOperationWS('ManterRota')
+						lRet        := .F.
+						break
+					endif
+
+					If Empty(::GetToken())
+						lRet := .F. 
+						Break 
+					EndIf 
+
+					CC2->(dbSeek(xFilial()+SZJ->ZJ_UFORIGE+SZJ->ZJ_MUNORI))
+					cMunOri 		:= AllTrim(CC2->CC2_MUN)
+					CC2->(dbSeek(xFilial()+SZJ->ZJ_UFDESTI+SZJ->ZJ_MUNDES))
+					cMunDes 		:= AllTrim(CC2->CC2_MUN)
+					cNomeRota   := cMunOri+"/"+AllTrim(SZJ->ZJ_UFORIGE)+" PARA "+cMunDes+"/"+AllTrim(SZJ->ZJ_UFDESTI)
+
+					cXML	+= '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="https://ws.rodocred.com.br/">' + CRLF
+					cXML	+= '   <soapenv:Header/>' + CRLF
+					cXML	+= '   <soapenv:Body>' + CRLF
+					cXML	+= '      <ws:ManterRotaRequest>' + CRLF
+					cXML	+= '			<ws:IdentificacaoIntegracao>' + CRLF
+					cXML	+= '				<ws:IdClienteRodocred>'+self:cIDCliente+'</ws:IdClienteRodocred>' + CRLF
+					cXML	+= '				<ws:TokenAutenticacao>' + ::GetToken() +'</ws:TokenAutenticacao>' + CRLF
+					cXML	+= '				<ws:NumeroTransacao>'+self:cSenha+'</ws:NumeroTransacao>' + CRLF
+					cXML	+= '				<ws:VersaoServico>1.00</ws:VersaoServico>' + CRLF
+					cXML	+= '			</ws:IdentificacaoIntegracao>' + CRLF
+					cXML	+= '			<ws:IdClienteResponsavel>'+self:cIDCliente+'</ws:IdClienteResponsavel>' + CRLF
+					cXML	+= '			<ws:Operacao>'+iif(SZJ->ZJ_STATUS==INTEG_SUCESSO,"ALT","INC")+'</ws:Operacao>' + CRLF
+					cXML	+= '			<ws:NomeRota>'+cNomeRota+'</ws:NomeRota>' + CRLF
+					cXML	+= '			<ws:ResolucaoCidades>1</ws:ResolucaoCidades>' + CRLF
+					cXML	+= '			<ws:OrigemRota>' + CRLF
+					cXML	+= '				<ws:UFOrigem>'+AllTrim(SZJ->ZJ_UFORIGE)+'</ws:UFOrigem>' + CRLF
+					cXML	+= '				<ws:LocalidadeOrigem>'+AllTrim(cMunOri)+'</ws:LocalidadeOrigem>' + CRLF
+					cXML	+= '			</ws:OrigemRota>' + CRLF
+					cXML	+= '			<ws:DestinoRota>' + CRLF
+					cXML	+= '				<ws:UFDestino>'+AllTrim(SZJ->ZJ_UFDESTI)+'</ws:UFDestino>' + CRLF
+					cXML	+= '				<ws:LocalidadeDestino>'+AllTrim(cMunDes)+'</ws:LocalidadeDestino>' + CRLF
+					cXML	+= '			</ws:DestinoRota>' + CRLF
+					cXML	+= '		</ws:ManterRotaRequest>' + CRLF
+					cXML	+= '   </soapenv:Body>' + CRLF
+					cXML	+= '</soapenv:Envelope>' + CRLF
+
+					cMsg                 := self:adjustString( self:oWs:GetSoapMsg() )
+					cMsg						:= StrTran(cMsg, 'xmlns="https://ws.rodocred.com.br/"', "")
+					cMsg						:= StrTran(cMsg,'SOAP-ENV','soapenv')
+					
+					//Envia registro pra Fleetcor
+					self:setEnvio(cXML)
+					lRet                        := self:oWs:SendSoapMsg(EncodeUtf8(cXML))
+
+					if lRet
+						cRetorno        := self:adJustString( self:oWs:GetSoapResponse() )
+						self:setXMLRetorno( cRetorno )
+						lRet            := ::isXMLSuccess(cRetorno,':_ManterRotaResponse:_RetornoMensagem',':_StatusRetorno')
+						if lRet
+							lRet        := ::GravaRota(':_ManterRotaResponse',cNomeRota)
+						else
+							cMsgErro		:= "Rota: [" + cNomeRota + "]" + QUEB_2_LINHAS
+							::setError( cMsgErro + ::getError() )
+						endif
+						break
+					endif
+
+				END SEQUENCE
+
+				::gravaStatus(lRet,TABELA_ROTAS)
+				IncProcG2('Atualizando Rotas...')
+
+				If !lRet 
+					If Empty(cInconsis)
+						If !lLoteEnvio
+							::showMsgLog(,.T.,.T.)
+						EndIf 
+					Else
+						If !lLoteEnvio
+							::showMsgLog(cInconsis,.T.,.T.)
+						EndIf
+					EndIf 
+				Else 
+					If !lLoteEnvio
+						ApMsgInfo("Transmissão realizada com sucesso!","FLEETCOR")
+					EndIf
+				EndIf
+			Else 
+				If !lLoteEnvio
+					::showMsgLog(,.T.,.T.)
+					ApMsgInfo("Autenticação na URL Fleetcor não realizada. Comunique ao Administrador de sistema, ou verifique se o serviço do fornecedor está habilitado nesse momento.")
+				EndIf
+			Endif
+		Else 
+			If !lLoteEnvio
+				::showMsgLog(,.T.,.T.)	
+				ApMsgInfo("Autenticação na Fleetcor não realizada. Comunique ao Administrador de sistema, ou verifique se o serviço do fornecedor está habilitado nesse momento.")
+			EndIf
+		Endif
+
+	Next nW
+
+	IncProcG1('Finalizando ROTAS...')
+	AEval(aAreaSZJ, {|x| RestArea(x)})
+
+Return
+
+//-------------------------------------------------------------------
+method integTarifas(nQtdEixos) class IntegFleetcor
+
+	local lRet          		:= .T.
+	local cMsg          		:= ''
+	local cRetorno      		:= ''
+	local cXML          		:= ''
+	local cInconsis     		:= ''
+	Local aPedagio 			:= {}
+
+	DEFAULT lLoteConsult := .F.
+	DEFAULT nQtdEixos    := 0 
+
+	if ::autenticaUsuario()
+
+		If ::initWSDL()
+
+			BEGIN SEQUENCE 
+
+				if !self:setOperationWS('ConsultarTarifas')
+					lRet        := .F.
+					break
+				endif
+
+				If Empty(::GetToken())
+					lRet := .F. 
+					Break 
+				EndIf 
+
+				If Empty(SZJ->ZJ_CODROT) 
+				   cInconsis := "Rota cadastrada ainda não foi enviada para a base da Fleetcor."
+					lRet := .F.
+					BREAK 
+				EndIf 
+
+				If nQtdEixos == 0
+				   cInconsis := "Quantidade de eixos do veículo não informado."
+					lRet := .F.
+					BREAK 
+				EndIf 
+
+				cXML	+= '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="https://ws.rodocred.com.br/">' + CRLF
+				cXML	+= '   <soapenv:Header/>' + CRLF
+				cXML	+= '   <soapenv:Body>' + CRLF
+				cXML	+= '      <ws:ConsultarTarifasRequest>' + CRLF
+				cXML	+= '			<ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '				<ws:IdClienteRodocred>'+self:cIDCliente+'</ws:IdClienteRodocred>' + CRLF
+				cXML	+= '				<ws:TokenAutenticacao>' + ::GetToken() +'</ws:TokenAutenticacao>' + CRLF
+				cXML	+= '				<ws:NumeroTransacao>'+self:cSenha+'</ws:NumeroTransacao>' + CRLF
+				cXML	+= '				<ws:VersaoServico>1.00</ws:VersaoServico>' + CRLF
+				cXML	+= '			</ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '			<ws:IdClienteResponsavel>'+self:cIDCliente+'</ws:IdClienteResponsavel>' + CRLF
+				cXML	+= '			<ws:CodigoRota>'+AllTrim(SZJ->ZJ_CODROT)+'</ws:CodigoRota>' + CRLF
+				cXML	+= '			<ws:QtdeEixos>'+AllTrim(Str(nQtdEixos))+'</ws:QtdeEixos>' + CRLF
+				cXML	+= '			<ws:TipoRodagem>D</ws:TipoRodagem>' + CRLF
+				cXML	+= '		</ws:ConsultarTarifasRequest>' + CRLF
+				cXML	+= '   </soapenv:Body>' + CRLF
+				cXML	+= '</soapenv:Envelope>' + CRLF
+
+				cMsg                 := self:adjustString( self:oWs:GetSoapMsg() )
+				cMsg						:= StrTran(cMsg, 'xmlns="https://ws.rodocred.com.br/"', "")
+				cMsg						:= StrTran(cMsg,'SOAP-ENV','soapenv')
+				
+				//Envia registro pra Fleetcor
+				self:setEnvio(cXML)
+				lRet                        := self:oWs:SendSoapMsg(EncodeUtf8(cXML))
+
+				if lRet
+					cRetorno        := self:adJustString( self:oWs:GetSoapResponse() )
+					self:setXMLRetorno( cRetorno )
+					lRet            := ::isXMLSuccess(cRetorno,':_ConsultarTarifasResponse:_RetornoMensagem',':_StatusRetorno')
+					if !lRet
+						cMsgErro		:= "Rota: [" + AllTrim(SZJ->ZJ_NOME) + "]" + QUEB_2_LINHAS
+						::setError( cMsgErro + ::getError() )
+					Else 
+						aPedagio := ::RetornaPedagio(':_ConsultarTarifasResponse:_ListaTarifas',SZJ->ZJ_NOME)
+					endif
+					BREAK
+				endif
+
+			END SEQUENCE
+
+			If !lRet 
+				If Empty(cInconsis)
+					If !lLoteConsult
+						::showMsgLog(,.T.,.T.)
+					EndIf 
+				Else
+					If !lLoteConsult
+						::showMsgLog(cInconsis,.T.,.T.)
+					EndIf
+				EndIf 
+			EndIf
+		Else 
+			If !lLoteConsult
+				::showMsgLog(,.T.,.T.)
+			EndIf
+		Endif
+	Else 
+		If !lLoteConsult
+			::showMsgLog(,.T.,.T.)	
+		EndIf
+	Endif
+
+Return ( aPedagio )
+
+//------------------------------------------------------------------- 
+method integViagem() class IntegFleetcor
+	
+	local lRet          		:= .T.
+	local cMsg          		:= ''
+	Local aAreas				:= { GetArea(), SF2->(GetArea()), SA1->(GetArea()), SA4->(GetArea()), GU8->(GetArea()) }
+
+   CC2->(dbSetOrder(1))
+	SF2->(dbSetOrder(1))
+	SF2->(dbSeek(SZV->ZV_FILIAL+SZV->ZV_DOC+SZV->ZV_SERIE+SZV->ZV_CODCLI+SZV->ZV_LOJCLI))
+	SA1->(dbSetOrder(1))
+	SA1->(dbSeek(xFilial("SA1")+SF2->F2_CLIENTE+SF2->F2_LOJA))
+	SA4->(dbSetOrder(1))
+	SA4->(dbSeek(xFilial("SA4")+SF2->F2_TRANSP))
+
+	if ::autenticaUsuario()
+
+		If ::initWSDL()
+
+			BEGIN SEQUENCE 
+
+				if !self:setOperationWS('ComprarPedagio')
+					lRet        := .F.
+					break
+				endif
+
+				If Empty(::GetToken())
+					lRet := .F. 
+					Break 
+				EndIf 
+
+				If Empty(SF2->F2_NUMMDF)
+					cInconsis := "Documento de frete não encontrado para essa viagem"
+					lRet := .F. 
+					BREAK
+				EndIf 
+
+				DA3->(dbSetOrder(3))
+				If !DA3->(dbSeek(xFilial()+SubStr(SF2->F2_ZZPLACA,1,8)))
+					cInconsis := "Placa do veículo não encontrada"
+					lRet := .F. 
+					BREAK
+				EndIf 
+				If DA3->(Empty(DA3->DA3_CORVEI))
+					cInconsis := "Cor do veículo não definida. Verifique o campo DA3_CORVEI (Cor) no cadastro de veículos do OMS"
+					lRet := .F. 
+					BREAK
+				EndIf 
+				GV3->(dbSetOrder(1))
+				If !GV3->(dbSeek(xFilial()+DA3->DA3_TIPVEI))
+					cInconsis := "Tipo de veículo não cadastrado. Verifique o campo DA3_TIPVEI (Tipo Veiculo) no cadastro de veículos do OMS"
+					lRet := .F.
+					BREAK 
+				EndIf
+				DUT->(dbSetOrder(1))
+				If !DUT->(dbSeek(xFilial()+DA3->DA3_TIPVEI))
+					cInconsis := "Tipo de veículo não cadastrado no GFE. Verifique o cadastro de tipos de veículo do GFE"
+					lRet := .F.
+					BREAK 
+				EndIf
+
+      		If !CC2->(dbSeek(xFilial()+SZV->ZV_UFORIGE+SubStr(SZV->ZV_CIDORIG,1,5))) 
+				   cInconsis := "Município de ORIGEM não localizado na tabela de municípios."
+					lRet := .F.
+					BREAK 
+				EndIf 
+
+      		If Empty(CC2->CC2_ZZCDIB)
+				   cInconsis := "Município de ORIGEM não foi transmitido para a Fleetcor. Realize a transmissão, e tente novamente."
+					lRet := .F.
+					BREAK 
+				EndIf 
+
+				cIBGOrigem := CC2->CC2_ZZCDIB
+
+      		If !CC2->(dbSeek(xFilial()+SZV->ZV_UFDESTI+SubStr(SZV->ZV_CIDDEST,1,5))) 
+				   cInconsis := "Município de DESTINO não localizado na tabela de municípios."
+					lRet := .F.
+					BREAK 
+				EndIf 
+
+      		If Empty(CC2->CC2_ZZCDIB)
+				   cInconsis := "Município de DESTINO não foi transmitido para a Fleetcor. Realize a transmissão, e tente novamente."
+					lRet := .F.
+					BREAK 
+				EndIf 
+
+				cIBGDestino := CC2->CC2_ZZCDIB
+				cAuxData    := Dtos(SF2->F2_EMISSAO)
+				cDataViagem := SubStr(cAuxData,1,4)+"-"+SubStr(cAuxData,5,2)+"-"+SubStr(cAuxData,7,2)
+				
+				cXML	+= '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="https://ws.rodocred.com.br/">' + CRLF
+				cXML	+= '   <soapenv:Header/>' + CRLF
+				cXML	+= '   <soapenv:Body>' + CRLF
+				cXML	+= '      <ws:ComprarPegagioRequest>' + CRLF
+				cXML	+= '			<ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '				<ws:IdClienteRodocred>'+self:cIDCliente+'</ws:IdClienteRodocred>' + CRLF
+				cXML	+= '				<ws:TokenAutenticacao>' + ::GetToken() +'</ws:TokenAutenticacao>' + CRLF
+				cXML	+= '				<ws:NumeroTransacao>'+self:cSenha+'</ws:NumeroTransacao>' + CRLF
+				cXML	+= '				<ws:VersaoServico>1.00</ws:VersaoServico>' + CRLF
+				cXML	+= '			</ws:IdentificacaoIntegracao>' + CRLF
+				cXML	+= '			<ws:IdClienteResponsavel>'+self:cIDCliente+'</ws:IdClienteResponsavel>' + CRLF
+				cXML	+= '		   <ws:OperacaoPedagio>COM</ws:OperacaoPedagio>' + CRLF
+				cXML	+= '			<ws:DadosViagemPedagio>' + CRLF
+				cXML	+= '			   <ws:Embarque>'+cDataViagem+'</ws:Embarque>' + CRLF
+				cXML	+= '			   <ws:DocumentoRef>'+AllTrim(SF2->F2_NUMMDF)+'</ws:DocumentoRef>' + CRLF
+				cXML	+= '			</ws:DadosViagemPedagio>' + CRLF
+				cXML	+= '			<ws:RotaViagem>' + CRLF
+				cXML	+= '			    <ws:OrigemDestinoRota>' + CRLF
+				cXML	+= '			       <ws:CodigoIBGEOrigem>'+AllTrim(cIBGOrigem)+'</ws:CodigoIBGEOrigem>' + CRLF
+				cXML	+= '			       <ws:CodigoIBGEDestino>'+AllTrim(cIBGDestino)+'</ws:CodigoIBGEDestino>' + CRLF
+				cXML	+= '				 </ws:OrigemDestinoRota>' + CRLF
+				cXML	+= '			</ws:RotaViagem>' + CRLF
+				cXML	+= '			<ws:VeiculosViagem>' + CRLF
+				cXML	+= '				 <ws:PlacaVeiculo>'+AllTrim(SF2->F2_ZZPLACA)+'</ws:PlacaVeiculo>' + CRLF
+				cXML	+= '				 <ws:TipoVeiculo>3</ws:TipoVeiculo>' + CRLF
+				cXML	+= '				 <ws:QtdeEixos>'+AllTrim(Str(DA3->DA3_QTDEIX))+'</ws:QtdeEixos>' + CRLF
+				cXML	+= '			    <ws:TipoRodagem>D</ws:TipoRodagem>' + CRLF
+				cXML	+= '			</ws:VeiculosViagem>' + CRLF
+				cXML	+= '			<ws:ValePedagioViagem>' + CRLF
+				cXML	+= '			    <ws:OperadoraFinanceiraVP>DBT</ws:OperadoraFinanceiraVP>' + CRLF
+				cXML	+= '			    <ws:MeioPagamentoValePedagio>1</ws:MeioPagamentoValePedagio>' + CRLF
+				cXML	+= '			    <ws:ModalidadeLocalImpressao>LOC</ws:ModalidadeLocalImpressao>' + CRLF
+				cXML	+= '			    <ws:IDLocalImpressao>999999</ws:IDLocalImpressao>' + CRLF
+				cXML	+= '			    <ws:GerarComprovante>S</ws:GerarComprovante>' + CRLF
+				cXML	+= '			</ws:ValePedagioViagem>' + CRLF
+				cXML	+= '		   <ws:GerarComprovante>S</ws:GerarComprovante>' + CRLF
+				cXML	+= '		 </ws:ComprarPedagioRequest>' + CRLF
+				cXML	+= '   </soapenv:Body>' + CRLF
+				cXML	+= '</soapenv:Envelope>' + CRLF
+
+				cMsg                 := self:adjustString( self:oWs:GetSoapMsg() )
+				cMsg						:= StrTran(cMsg, 'xmlns="https://ws.rodocred.com.br/"', "")
+				cMsg						:= StrTran(cMsg,'SOAP-ENV','soapenv')
+				
+				//Envia registro pra Fleetcor
+				self:setEnvio(cXML)
+				lRet                        := self:oWs:SendSoapMsg(EncodeUtf8(cXML))
+				If lRet
+					cRetorno        := self:adJustString( self:oWs:GetSoapResponse() )
+					self:setXMLRetorno( cRetorno )
+					lRet            := ::isXMLSuccess(cRetorno,':_ComprarPedagio',':_StatusRetorno')
+					break
+				Endif
+
+			END SEQUENCE
+
+			::gravaStatus(lRet,TABELA_VIAGEM)
+			If !lRet 
+				If Empty(cInconsis)
+					::showMsgLog(,.T.,.T.)
+				Else
+					::showMsgLog(cInconsis,.T.,.T.)
+				EndIf 
+			EndIf
+		Else 
+			::showMsgLog(,.T.,.T.)
+		Endif
+	Else 
+		::showMsgLog(,.T.,.T.)	
+	Endif
+	
+	AEval(aAreas, {|x| RestArea(x)})
+
+Return
+
+//-------------------------------------------------------------------
+method posicTabViagem(cFilNf,cDoc,cSerie,cCliente,cLoja) class IntegFleetcor
+	local lRet			:= .F.
+	local cChaveNF		:= ""
+
+	BEGIN SEQUENCE
+
+		cChaveNF		:= cFilNf + cDoc + cSerie + cCliente + cLoj
+
+		SF2->(DbSetOrder(1)) //F2_FILIAL+F2_DOC+F2_SERIE+F2_CLIENTE+F2_LOJA+F2_FORMUL+F2_TIPO
+		SA4->(DbSetOrder(1)) //A4_FILIAL+A4_COD
+		SA2->(DbSetOrder(3)) //A2_FILIAL+A2_CGC
+		GU3->(DbSetOrder(12)) //GU3_FILIAL+GU3_CDERP+GU3_CDCERP
+		GU8->(DbSetOrder(2)) //GU8_FILIAL+GU8_PLACA
+
+		If !SF2->(DbSeek( cChaveNF ))
+			::setError('Não foi possível localizar a NF com a chave ' + cChaveNF )
+			break
+		endif
+
+		If !SA4->(DbSeek( FwXFilial("SA4") + SF2->F2_TRANSP ))
+			::setError('Não foi possível localizar a transportadora ' + SF2->F2_TRANSP + " da NF" )
+			break
+		endif
+
+		If !SA2->(DbSeek( FwXFilial("SA2") + SA4->A4_CGC ))
+			::setError('Não localizado fornecedor com o CPF/CNPJ ' + SA4->A4_CGC )
+			break
+		endif
+
+		If !GU3->(DbSeek( FwXFilial("GU3") + SA2->A2_COD + SA2->A2_LOJA ))
+			::setError('Não localizado emitente com o CPF/CNPJ ' + SA4->A4_CGC )
+			lRet        := .F.
+			break
+		endif
+
+		If !GU8->(DbSeek( FwXFilial("GU8") + SF2->F2_ZZPLACA ))
+			::setError('Não localizado veiculo com a placa ' + SF2->F2_ZZPLACA )
+			lRet        := .F.
+			break
+		endif
+
+	END SEQUENCE
+
+	::gravaStatus(lRet,TABELA_VIAGEM)
+
+return lRet
+
+//-------------------------------------------------------------------
+method showMsgLog(cMensagem,lStop,lExibe) class IntegFleetcor
+
+	default cMensagem   := self:getError()
+	default lStop       := .T.
+	default lExibe      := .F.
+
+	geraLog( cMensagem )
+
+	if !self:lJob .and. lExibe
+		If lStop
+			//MsgStop(cMensagem,fundesc())
+			::showAviso('ERRO',cMensagem)
+		else
+			::showAviso('AVISO',cMensagem)
+			//msgAlert(cMensagem,fundesc())
+		endif
+	endif
+
+return
+
+//-------------------------------------------------------------------
+method gravaStatus(lSucesso as logical,cTabela as character) class IntegFleetcor
+
+	if cTabela == TABELA_VIAGEM
+		If SZV->(FieldPos("ZV_FILIAL")) > 0 .And. Reclock(TABELA_VIAGEM,.F.)
+			SZV->ZV_INTEGRA := iif(lSucesso,INTEG_SUCESSO,INTEG_ERRO)			
+			SZV->ZV_XMLEVAL := self:getEnvio()
+			SZV->ZV_XMLRVAL := alltrim( self:getError() ) + QUEB_2_LINHAS + allTrim( self:getRetorno() )
+			SZV->ZV_ERRO	 := alltrim( self:getError() )
+			SZV->ZV_DTINTEG := Date()
+			SZV->ZV_HRINTEG := Time()
+			SZV->ZV_USERPRO := AllTrim(cUserName)
+			SZV->(MsUnlock())
+		endif
+	elseif cTabela == TABELA_TRANSPORT
+		If SA4->(FieldPos("A4_ZZINTEG")) > 0 .and. Reclock(TABELA_TRANSPORT,.F.)
+			SA4->A4_ZZINTEG		:= iif(lSucesso,INTEG_SUCESSO,INTEG_ERRO)
+			SA4->A4_ZZXMLE 		:= self:getEnvio()
+			SA4->A4_ZZXMLR 		:= alltrim( self:getError() ) + QUEB_2_LINHAS + allTrim( self:getRetorno() )
+			SA4->A4_ZZDTINT		:= Date()
+			SA4->A4_ZZHRINT		:= Time()
+			SA4->A4_ZZUSINT		:= AllTrim(cUserName)
+			SA4->(MsUnlock())
+		endif
+	elseif cTabela == TABELA_MOTORISTA
+		If DA4->(FieldPos("DA4_ZZINTE")) > 0 .and. Reclock(TABELA_MOTORISTA,.F.)
+			DA4->DA4_ZZINTE			:= iif(lSucesso,INTEG_SUCESSO,INTEG_ERRO)
+			DA4->DA4_ZZXMLE 		:= self:getEnvio()
+			DA4->DA4_ZZXMLR 		:= alltrim( self:getError() ) + QUEB_2_LINHAS + allTrim( self:getRetorno() )
+			DA4->DA4_ZZDTIN			:= Date()
+			DA4->DA4_ZZHRIN			:= Time()
+			DA4->DA4_ZZUSIN			:= AllTrim(cUserName)
+			DA4->(MsUnlock())
+		endif
+	elseif cTabela == TABELA_VEICULO
+		If GU8->(FieldPos("GU8_ZZINTE")) > 0 .and. Reclock(TABELA_VEICULO,.F.)
+			GU8->GU8_ZZINTE			:= iif(lSucesso,INTEG_SUCESSO,INTEG_ERRO)
+			GU8->GU8_ZZXMLE 			:= self:getEnvio()
+			GU8->GU8_ZZXMLR 			:= alltrim( self:getError() ) + QUEB_2_LINHAS + allTrim( self:getRetorno() )
+			GU8->GU8_ZZDTIN			:= Date()
+			GU8->GU8_ZZHRIN			:= Time()
+			GU8->GU8_ZZUSIN			:= AllTrim(cUserName)
+			GU8->(MsUnlock())
+		endif
+	Elseif cTabela == TABELA_ROTAS
+		If SZJ->(FieldPos("ZJ_STATUS")) > 0 .and. Reclock(TABELA_ROTAS,.F.)
+			SZJ->ZJ_STATUS			:= iif(lSucesso,INTEG_SUCESSO,INTEG_ERRO)
+			SZJ->ZJ_XMLENV 		:= self:getEnvio()
+			SZJ->ZJ_XMLRET 		:= alltrim( self:getError() ) + QUEB_2_LINHAS + allTrim( self:getRetorno() )
+			SZJ->ZJ_DTIN			:= Date()
+			SZJ->ZJ_HRIN			:= Time()
+			SZJ->ZJ_USIN			:= AllTrim(cUserName)
+			SZJ->(MsUnlock())
+		endif
+	endif
+return
+
+//-------------------------------------------------------------------
+method showAviso(cTitulo as character,cMensagem as character) class IntegFleetcor
+
+	local oDlg				:= nil
+	local oTMultiget1		:= nil
+	local nAltura           := 450
+	local nLargura          := 300
+	local nLinBotao         := 200
+	local nColBotao         := 110
+
+	local nAltMul			:= 140
+	local nColMul			:= 180
+
+	Define MsDialog oDlg From 0,0 to nAltura,nLargura Pixel Title cTitulo Style 128
+	oTMultiget1 := tMultiget():new( 01, 01, {| u | if( pCount() > 0, cMensagem := u, cMensagem ) }, oDlg, nAltMul, nColMul, , , , , , .F.,,,,,,.T. )
+	@ nLinBotao,nColBotao Button "OK"      		of oDlg Size 30,15 Pixel Action (oDlg:End())
+	ACTIVATE DIALOG oDlg CENTERED
+return
+
+//-------------------------------------------------------------------
+method toDateWS(dDate) class IntegFleetcor
+return cValToChar(Year(dDate)) + '-' + StrZero(Month(dDate),2) + '-' + StrZero(Day(dDate),2)
+
+//-------------------------------------------------------------------
+method gravaViagem() class IntegFleetcor
+
+	local aAreaSA1			:= SA1->(GetArea())
+
+	SA1->(DbSeek( FwXFilial("SA1") + SF2->F2_CLIENTE + SF2->F2_LOJA ))
+
+	If Reclock("SZV",.T.)
+		SZV->ZV_FILIAL			:= FwXFilial("SZV")
+		SZV->ZV_CODIGO			:= GETSXENUM("SZV","ZV_CODIGO")
+		SZV->ZV_DOC				:= SF2->F2_DOC
+		SZV->ZV_SERIE			:= SF2->F2_SERIE
+		SZV->ZV_CIDORIG		:= AllTrim(SM0->M0_CODMUN)
+		SZV->ZV_UFORIGE		:= AllTrim(SM0->M0_ESTCOB)
+		SZV->ZV_CEPORIG		:= AllTrim(SM0->M0_CEPCOB)
+		SZV->ZV_CIDDEST		:= AllTrim(SA1->A1_CODMUN)
+		SZV->ZV_UFDESTI		:= AllTrim(SA1->A1_EST)
+		SZV->ZV_CEPDEST		:= AllTrim(SA1->A1_CEP)
+		SZV->ZV_CODCLI			:= SA1->A1_COD
+		SZV->ZV_LOJCLI			:= SA1->A1_LOJA
+		SZV->(MsUnlock())
+	endif
+
+	restArea(aAreaSA1)
+
+return
+
+static function tstXMLVei(cToken)
+
+return cXML
+
+//-----------------------------------------------------------------
+static Function geraLog( cMensagem )
+	Conout("[" + DTOC(date()) + " " + Time() + "] IntegFleetcor - " + cMensagem )
+Return
