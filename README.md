@@ -11,8 +11,9 @@
    > 📆Data do Projeto: Outubro de 2022<BR>
    > Gerente de Projeto: Jean Carlo TOTVS IP<br>
    > Desenvolvedores: Julio Lisboa e Michel Sander<br>
-   > 🏦Projeto entregue á Empresa IMERY´S
-   
+   > 🏦Projeto entregue á Empresa IMERY´S<br>
+
+   Obs.: "Esse projeto foi inicialmente desenvolvido por Julio Lisboa da Totvs IP, desenvolvendo as rotinas de API, que foram complementadas com meus fontes."
    
 # Tecnologias utilizadas
 <img width="185" alt="image" src="https://github.com/michelsander/ListaMunicipiosSmartView/assets/104599995/b7295cdc-2d45-40ee-bb43-ea05e2d9d705"><br>
