@@ -16,7 +16,6 @@
    
 # Tecnologias utilizadas
 <img width="185" alt="image" src="https://github.com/michelsander/ListaMunicipiosSmartView/assets/104599995/b7295cdc-2d45-40ee-bb43-ea05e2d9d705"><br>
-[Totvs ADVPL-TLPP Language](https://www.totvs.com/blog/developers/advpl/)<br>
 
 > Overview
 
